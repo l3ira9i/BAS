@@ -1,0 +1,34 @@
+version: '3'
+services:
+  openaev-dev-pgsql:
+    container_name: openaev-dev-pgsql
+    image: postgres:18-alpine
+    environment:
+      POSTGRES_USER: ${POSTGRES_USER}
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD}
+      POSTGRES_DB: openaev
+    ports:
+      - "5432:5432"
+    restart: unless-stopped
+  openaev-dev-minio:
+    container_name: openaev-dev-minio
+    image: minio/minio:latest
+    ports:
+      - "9000:9000"
+      - "9001:9001"
+    environment:
+      MINIO_ROOT_USER: ${MINIO_ROOT_USER}
+      MINIO_ROOT_PASSWORD: ${MINIO_ROOT_PASSWORD}
+    command: server /data --console-address ":9001"
+    restart: unless-stopped
+  openaev-dev-rabbitmq:
+    container_name: openaev-dev-rabbitmq
+    image: rabbitmq:4.2-management
+    volumes:
+      - type: bind
+        source: rabbitmq.conf
+        target: /etc/rabbitmq/rabbitmq.conf
+    restart: unless-stopped
+    ports:
+      - "5672:5672"
+      - "15672:15672"

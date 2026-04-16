@@ -1,0 +1,361 @@
+services:
+
+  ###########################
+  # DEPENDENCIES            #
+  ###########################
+
+  # Generate RSA key for xtm-composer (PKCS#8 format)
+  rsa-key-generator:
+    image: alpine/openssl:latest
+    volumes:
+      - rsakeys:/keys
+    entrypoint: ["/bin/ash"]
+    command: ["-c", "if [ ! -f /keys/private_key.pem ]; then openssl genpkey -algorithm RSA -out /keys/private_key.pem -pkeyopt rsa_keygen_bits:4096; fi && tail -f /dev/null"]
+    healthcheck:
+      test: ["CMD", "test", "-f", "/keys/private_key.pem"]
+      interval: 10s
+      timeout: 5s
+      retries: 3
+    restart: always
+  pgsql:
+    image: postgres:18-alpine
+    environment:
+      POSTGRES_USER: ${POSTGRES_USER}
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD}
+      POSTGRES_DB: openaev
+    volumes:
+      - pgsqldata:/var/lib/postgresql/data
+    restart: always
+    healthcheck:
+      test: [ "CMD", "pg_isready", "-U", "${POSTGRES_USER}", "-d", "openaev" ]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+  minio:
+    image: minio/minio:latest
+    volumes:
+      - s3data:/data
+    ports:
+      - "9000:9000"
+    environment:
+      MINIO_ROOT_USER: ${MINIO_ROOT_USER}
+      MINIO_ROOT_PASSWORD: ${MINIO_ROOT_PASSWORD}
+    command: server /data
+    restart: always
+    healthcheck:
+      test: ["CMD", "mc", "ready", "local"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+  rabbitmq:
+    image: rabbitmq:4.2-management
+    environment:
+      - RABBITMQ_DEFAULT_USER=${RABBITMQ_DEFAULT_USER}
+      - RABBITMQ_DEFAULT_PASS=${RABBITMQ_DEFAULT_PASS}
+      - RABBITMQ_NODENAME=rabbit01@localhost
+    volumes:
+      - type: bind
+        source: ./rabbitmq.conf
+        target: /etc/rabbitmq/rabbitmq.conf
+      - amqpdata:/var/lib/rabbitmq
+    restart: always
+    healthcheck:
+      test: [ "CMD", "rabbitmq-diagnostics", "-q", "ping" ]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+  elasticsearch:
+    image: docker.elastic.co/elasticsearch/elasticsearch:8.13.4
+    volumes:
+      - esdata:/usr/share/elasticsearch/data
+    ports:
+      - "9200:9200"
+    environment:
+      # Comment-out the line below for a cluster of multiple nodes
+      - discovery.type=single-node
+      # Uncomment the line below below for a cluster of multiple nodes
+      # - cluster.name=docker-cluster
+      - xpack.ml.enabled=false
+      - network.host=0.0.0.0
+      - xpack.security.enabled=false
+      - thread_pool.search.queue_size=5000
+      - logger.org.elasticsearch.discovery="ERROR"
+      - ES_JAVA_OPTS=-Xms${ELASTIC_MEMORY_SIZE} -Xmx${ELASTIC_MEMORY_SIZE}
+
+    restart: always
+    ulimits:
+      memlock:
+        soft: -1
+        hard: -1
+      nofile:
+        soft: 65536
+        hard: 65536
+    healthcheck:
+      test: curl -s http://elasticsearch:9200 >/dev/null || exit 1
+      interval: 30s
+      timeout: 10s
+      retries: 50
+
+  kibana:
+    image: docker.elastic.co/kibana/kibana:7.17.0
+    environment:
+      - ELASTICSEARCH_HOSTS=http://elasticsearch:9200
+    ports:
+      - "5601:5601"
+    depends_on:
+      - elasticsearch
+      
+  ###########################
+  # SCRIPTS                 #
+  ###########################
+
+  caldera-proxy:
+    build:
+      context: .
+      dockerfile: Dockerfile.proxy
+    ports:
+      - "8890:8890"
+    environment:
+      - CALDERA_URL=http://caldera:8888
+      - CALDERA_API_KEY=${CALDERA_API_KEY_RED}
+      - PROXY_PORT=8890
+    depends_on:
+      caldera:
+        condition: service_healthy
+    restart: unless-stopped
+
+  detection-bridge:
+    build: ./bridge
+    environment:
+      - ES_URL=http://elasticsearch:9200
+      - OPENAEV_URL=http://openaev:8080
+      - OPENAEV_TOKEN=${OPENAEV_ADMIN_TOKEN}
+    depends_on:
+      elasticsearch:
+        condition: service_healthy
+      openaev:
+        condition: service_healthy
+    restart: always
+
+  ###########################
+  # CALDERA                 #
+  ###########################
+  
+  caldera:
+      image: ghcr.io/mitre/caldera:5.2.0
+      restart: always
+      ports:
+        - "8888:8888"
+      environment:
+        CALDERA_URL: ${CALDERA_PUBLIC_URL:-http://localhost:8888}
+      volumes:
+        - type: bind
+          source: ./caldera.yml
+          target: /usr/src/app/conf/local.yml
+      healthcheck:
+        test: ["CMD", "curl", "-f", "http://localhost:8888"]
+        interval: 30s
+        timeout: 20s
+        retries: 10
+       
+  ###########################
+  # OPENAEV                 #
+  ###########################
+
+  openaev:
+    image: openaev/platform:2.3.2
+    environment:
+      - OPENAEV_BASE-URL=http://192.168.1.130:8090
+      - OPENAEV_AUTH-LOCAL-ENABLE=true
+      - OPENAEV_ADMIN_EMAIL=${OPENAEV_ADMIN_EMAIL}
+      - OPENAEV_ADMIN_PASSWORD=${OPENAEV_ADMIN_PASSWORD}
+      - OPENAEV_ADMIN_TOKEN=${OPENAEV_ADMIN_TOKEN}
+      - OPENAEV_HEALTHCHECK_KEY=${OPENAEV_HEALTHCHECK_KEY}
+      - OPENAEV_ADMIN_ENCRYPTION_KEY=${OPENAEV_ADMIN_ENCRYPTION_KEY}
+      - OPENAEV_ADMIN_ENCRYPTION_SALT=${OPENAEV_ADMIN_ENCRYPTION_SALT}
+#      - OPENAEV_EXTRA-TRUSTED-CERTS-DIR=/opt/openaev/additional_certs
+      - SPRING_DATASOURCE_URL=jdbc:postgresql://pgsql:5432/openaev
+      - SPRING_DATASOURCE_USERNAME=${POSTGRES_USER}
+      - SPRING_DATASOURCE_PASSWORD=${POSTGRES_PASSWORD}
+      - MINIO_ENDPOINT=minio
+      - MINIO_ACCESS-KEY=${MINIO_ROOT_USER}
+      - MINIO_ACCESS-SECRET=${MINIO_ROOT_PASSWORD}
+      - OPENAEV_RABBITMQ_HOSTNAME=rabbitmq
+      - OPENAEV_RABBITMQ_USER=${RABBITMQ_DEFAULT_USER}
+      - OPENAEV_RABBITMQ_PASS=${RABBITMQ_DEFAULT_PASS}
+      - ELASTICSEARCH_URL=http://elasticsearch:9200
+      - SPRING_ELASTICSEARCH_URIS=http://elasticsearch:9200
+      - ENGINE_URL=http://elasticsearch:9200  
+      - OPENAEV_MAIL_IMAP_ENABLED=false
+      - OPENAEV_MAIL_SMTP_ENABLED=false
+      - MANAGEMENT_HEALTH_MAIL_ENABLED=false
+      - EXECUTOR_CALDERA_ENABLE=true
+      - EXECUTOR_CALDERA_URL=${EXECUTOR_CALDERA_URL}
+      - EXECUTOR_CALDERA_API-KEY=${EXECUTOR_CALDERA_API_KEY}
+      - EXECUTOR_CALDERA_AUTH_HEADER=${EXECUTOR_CALDERA_AUTH_HEADER}
+      - EXECUTOR_CALDERA_AUTH_IN_HEADER=${EXECUTOR_CALDERA_AUTH_IN_HEADER}
+      - EXECUTOR_CALDERA_PUBLIC-URL=http://192.168.1.130:8888
+
+      - INJECTOR_CALDERA_ENABLE=true
+      - INJECTOR_CALDERA_PUBLIC-URL=${INJECTOR_CALDERA_PUBLIC_URL}
+      - INJECTOR_CALDERA_URL=${INJECTOR_CALDERA_URL}
+      - INJECTOR_CALDERA_API-KEY=${INJECTOR_CALDERA_API_KEY}
+      - INJECTOR_CALDERA_ID=${INJECTOR_CALDERA_ID}
+      - INJECTOR_CALDERA_LOG_LEVEL=${INJECTOR_CALDERA_LOG_LEVEL}
+
+     #- SPRING_MAIL_HOST=${SMTP_HOST}
+     #- SPRING_MAIL_PORT=${SMTP_PORT}
+     #- SPRING_MAIL_USERNAME=${SMTP_USERNAME}
+     #- SPRING_MAIL_PASSWORD=${SMTP_PASSWORD}
+     #- SPRING_MAIL_PROPERTIES_MAIL_SMTP_AUTH=${SMTP_AUTH}
+     #- SPRING_MAIL_PROPERTIES_MAIL_SMTP_SSL_ENABLE=${SMTP_SSL_ENABLE}
+     #- SPRING_MAIL_PROPERTIES_MAIL_SMTP_SSL_TRUST=*
+     #- SPRING_MAIL_PROPERTIES_MAIL_SMTP_STARTTLS_ENABLE=${SMTP_STARTTLS_ENABLE}
+     #- SPRING_MAIL_HOST=localhost
+     #- OPENAEV_MAIL_IMAP_ENABLED=${OPENAEV_MAIL_IMAP_ENABLED}
+     #- OPENAEV_MAIL_IMAP_HOST=${IMAP_HOST}
+     #- OPENAEV_MAIL_IMAP_PORT=${IMAP_PORT}
+     #- OPENAEV_MAIL_IMAP_USERNAME=${IMAP_USERNAME}
+     #- OPENAEV_MAIL_IMAP_PASSWORD=${IMAP_PASSWORD}
+     #- OPENAEV_MAIL_IMAP_AUTH=${IMAP_AUTH}
+     #- OPENAEV_MAIL_IMAP_SSL_ENABLE=${IMAP_SSL_ENABLE}
+     #- OPENAEV_MAIL_IMAP_SSL_TRUST=*
+     # - OPENAEV_MAIL_IMAP_STARTTLS_ENABLE=${IMAP_STARTTLS_ENABLE}
+      - JAVA_TOOL_OPTIONS=${JAVA_TOOL_OPTIONS}
+#      - OPENAEV_DATAPACK_AUTO_IMPORT=false
+      - OPENAEV_SCHEDULER_ENABLED=${OPENAEV_SCHEDULER_ENABLED}
+      - OPENAEV_ELASTIC_INDEXING_ON_STARTUP=true
+      #- SERVER_SERVLET_CONTEXT_PATH=/
+      #- SPRING_MVC_SERVLET_PATH=/
+      - SPRING_DATASOURCE_HIKARI_MAXIMUM-POOL-SIZE=50
+      - SPRING_DATASOURCE_HIKARI_MINIMUM-IDLE=10
+      - SPRING_DATASOURCE_HIKARI_CONNECTION-TIMEOUT=60000
+      - SPRING_DATASOURCE_HIKARI_IDLE-TIMEOUT=300000
+      - SPRING_DATASOURCE_HIKARI_MAX-LIFETIME=600000      
+    ports:
+      - "${OPENAEV_PORT}:8080"
+#    volumes:
+#      - ./additional_certs:/opt/openaev/additional_certs:ro
+    depends_on:
+      pgsql:
+        condition: service_healthy
+      minio:
+        condition: service_healthy
+      rabbitmq:
+        condition: service_healthy
+      elasticsearch:
+        condition: service_healthy
+      caldera:
+        condition: service_healthy
+      caldera-proxy:
+        condition: service_started
+    restart: unless-stopped
+    healthcheck:
+      test: [ "CMD", "wget", "-qO-", "http://localhost:8080/api/health?health_access_key=${OPENAEV_HEALTHCHECK_KEY}" ]
+      interval: 30s
+      timeout: 30s
+      retries: 5
+      start_period: 300s
+
+
+  ###########################
+  # OPENAEV COLLECTORS      #
+  ###########################
+
+  collector-mitre-attack:
+    image: openaev/collector-mitre-attack:latest
+    environment:
+      - OPENAEV_URL=http://openaev:8080
+      - OPENAEV_TOKEN=${OPENAEV_ADMIN_TOKEN}
+      - COLLECTOR_ID=${MITREATTACKCOLLECTOR_ID}
+      - "COLLECTOR_NAME=MITRE ATT&CK"
+      - COLLECTOR_LOG_LEVEL=info
+    depends_on:
+      openaev:
+        condition: service_healthy
+    restart: always
+
+  collector-openaev:
+    image: openaev/collector-openaev:latest
+    environment:
+      - OPENAEV_URL=http://openaev:8080
+      - OPENAEV_TOKEN=${OPENAEV_ADMIN_TOKEN}
+      - COLLECTOR_ID=${OPENAEVCOLLECTOR_ID}
+      - "COLLECTOR_NAME=OpenAEV Datasets"
+      - COLLECTOR_LOG_LEVEL=info
+    depends_on:
+      openaev:
+        condition: service_healthy
+    restart: always
+
+  collector-atomic-red-team:
+    image: openaev/collector-atomic-red-team:latest
+    environment:
+      - OPENAEV_URL=http://openaev:8080
+      - OPENAEV_TOKEN=${OPENAEV_ADMIN_TOKEN}
+      - COLLECTOR_ID=${ATOMICREDTEAMCOLLECTOR_ID}
+      - "COLLECTOR_NAME=Atomic Red Team"
+      - COLLECTOR_LOG_LEVEL=info
+    depends_on:
+      openaev:
+        condition: service_healthy
+    restart: always
+    
+
+  ###########################
+  # WAZUH                   #
+  ###########################    
+ 
+  
+  
+    
+#  collector-nvd-nist-cve:
+#    image: openaev/collector-nvd-nist-cve:latest
+#    environment:
+#      - OPENAEV_URL=http://openaev:8080
+#      - OPENAEV_TOKEN=${OPENAEV_ADMIN_TOKEN}
+#      - COLLECTOR_ID= # Valid UUIDv4
+#      - NVD_NIST_CVE_API_KEY=${COLLECTOR_NVD_NIST_CVE_API_KEY}
+#      - "COLLECTOR_NAME=CVE by NVD NIST"
+#      - COLLECTOR_LOG_LEVEL=info
+#    depends_on:
+#      openaev:
+#        condition: service_healthy
+#    restart: always
+
+  ###########################
+  # OPENAEV INJECTORS       #
+  ###########################
+
+  injector-nmap:
+    image: openaev/injector-nmap:latest
+    environment:
+      - OPENAEV_URL=http://openaev:8080
+      - OPENAEV_TOKEN=${OPENAEV_ADMIN_TOKEN}
+      - INJECTOR_ID=${NMAPINJECTOR_ID}
+      - INJECTOR_NAME=Nmap
+      - INJECTOR_LOG_LEVEL=info
+    depends_on:
+      openaev:
+        condition: service_healthy
+    restart: always
+
+  injector-nuclei:
+    image: openaev/injector-nuclei:latest
+    environment:
+      - OPENAEV_URL=http://openaev:8080
+      - OPENAEV_TOKEN=${OPENAEV_ADMIN_TOKEN}
+      - INJECTOR_ID=${NUCLEIINJECTOR_ID}
+      - INJECTOR_NAME=Nuclei
+      - INJECTOR_LOG_LEVEL=info
+    depends_on:
+      openaev:
+        condition: service_healthy
+    restart: always
+
+volumes:
+  pgsqldata:
+  s3data:
+  amqpdata:
+  esdata:
+  rsakeys:

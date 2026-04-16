@@ -1,0 +1,15 @@
+FROM python:3.12-slim
+
+WORKDIR /app
+
+# Installer les dépendances
+RUN pip install --no-cache-dir flask requests
+
+# Copier le script proxy
+COPY caldera-header-proxy.py .
+
+# Exposer le port du proxy
+EXPOSE 8890
+
+# Lancer le proxy
+CMD ["python3", "caldera-header-proxy.py"]

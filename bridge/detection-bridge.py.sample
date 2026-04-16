@@ -1,0 +1,148 @@
+#!/usr/bin/env python3
+import os
+import requests
+import time
+import logging
+from datetime import datetime, timezone
+
+# ==========================================
+# 1. CONFIGURATION
+# ==========================================
+logging.basicConfig(level=logging.INFO, format='%(asctime)s - %(levelname)s - %(message)s', datefmt='%H:%M:%S')
+logger = logging.getLogger("OpenAEV-Bridge")
+
+ES_URL = os.environ.get("ES_URL", "http://elasticsearch:9200")
+OPENAEV_URL = os.environ.get("OPENAEV_URL", "http://openaev:8090")
+
+
+# 1. On récupère le bon Token
+OPENAEV_ADMIN_TOKEN = os.environ.get("OPENAEV_ADMIN_TOKEN", "LE_TOKEN_ICI!")
+
+# 2. On récupère l'ID du SIEM (pour la validation)
+SIEM_PLATFORM_ID = os.environ.get("SIEM_PLATFORM_ID", "LE_TOKEN_ICI!")
+
+
+ATTACK_SIGNATURES = [
+    "win32_computersystem",
+    "shcreatelocalserverrundll",
+    "control panel\\international\\geo"
+]
+
+validated_expectations = set()
+
+# ==========================================
+# 2. FONCTIONS API OPENAEV
+# ==========================================
+# ==========================================
+# 2. FONCTIONS API OPENAEV
+# ==========================================
+def get_pending_expectations(type_attente):
+    """type_attente doit être 'DETECTION' ou 'PREVENTION'"""
+    url = f"{OPENAEV_URL}/api/injects/expectations"
+    headers = {"Authorization": f"Bearer {OPENAEV_ADMIN_TOKEN}"}
+    pending_ids = []
+    try:
+        resp = requests.get(url, headers=headers, timeout=5)
+        if resp.status_code == 200:
+            for exp in resp.json():
+                if exp.get("inject_expectation_type") == type_attente and exp.get("inject_expectation_status") == "PENDING":
+                    exp_id = exp.get("inject_expectation_id")
+                    if exp_id not in validated_expectations:
+                        pending_ids.append(exp_id)
+    except Exception as e:
+        pass
+    return pending_ids
+
+def mark_as_detected_in_openaev(expectation_id):
+    url = f"{OPENAEV_URL}/api/expectations/{expectation_id}"
+    headers = {
+        "Authorization": f"Bearer {OPENAEV_ADMIN_TOKEN}",
+        "Content-Type": "application/json"
+    }
+    payload = {
+        "expectation_score": 100,
+        "security_platform": "SIEM_PLATFORM_ID",
+        "source_id": "55ca6e88-6867-4caf-b644-97a5a8473e9b",
+        "source_type": "security-platform",
+        "source_platform": "SIEM",
+        "source_name": "Elasticsearch"
+    }
+    try:
+        response = requests.put(url, headers=headers, json=payload, timeout=5)
+        if response.status_code == 200:
+            logger.info(f"OpenAEV mis à jour ! (ID: {expectation_id} -> 100%)")
+            validated_expectations.add(expectation_id)
+    except Exception as e:
+        pass
+
+# ==========================================
+# 3. MOTEURS DE DÉTECTION (SYSMON + DEFENDER)
+# ==========================================
+def check_detections():
+    # --- MOTEUR 1 : SYSMON (Cherche la DETECTION) ---
+    query_sysmon = {
+        "query": {
+            "bool": {
+                "must": [
+                    {"match": {"event.provider": "Microsoft-Windows-Sysmon"}},
+                    {"range": {"@timestamp": {"gte": "now-5m"}}}
+                ]
+            }
+        }
+    }
+    
+    # --- MOTEUR 2 : DEFENDER (Cherche la PREVENTION) ---
+    # On utilise winlog.channel pour être sûr de matcher ta nouvelle config !
+    query_defender = {
+        "query": {
+            "bool": {
+                "must": [
+                    {"match_phrase": {"winlog.channel": "Microsoft-Windows-Windows Defender/Operational"}},
+                    {"match": {"event.code": "1116"}},
+                    {"range": {"@timestamp": {"gte": "now-5m"}}}
+                ]
+            }
+        }
+    }
+    
+    try:
+        # 1. Vérification Sysmon -> Valide la DETECTION
+        resp_sysmon = requests.post(f"{ES_URL}/winlogbeat-*/_search", json=query_sysmon, timeout=10)
+        if resp_sysmon.status_code == 200:
+            hits = resp_sysmon.json().get("hits", {}).get("hits", [])
+            for hit in hits:
+                cmd = hit["_source"].get("process", {}).get("command_line", "")
+                if cmd:
+                    for signature in ATTACK_SIGNATURES:
+                        if signature in cmd.lower():
+                            # On ne demande QUE les ID de DETECTION !
+                            pending_ids = get_pending_expectations("DETECTION")
+                            if pending_ids:
+                                logger.info(f"[SYSMON] Attaque furtive repérée : {signature}")
+                                for exp_id in pending_ids: mark_as_detected_in_openaev(exp_id)
+
+        # 2. Vérification Defender -> Valide la PREVENTION
+        resp_defender = requests.post(f"{ES_URL}/winlogbeat-*/_search", json=query_defender, timeout=10)
+        if resp_defender.status_code == 200:
+            hits = resp_defender.json().get("hits", {}).get("hits", [])
+            if hits:
+                # On ne demande QUE les ID de PREVENTION !
+                pending_ids = get_pending_expectations("PREVENTION")
+                if pending_ids:
+                    logger.info(f"[DEFENDER] ALERTE ROUGE ! L'Antivirus a tué une menace !")
+                    for exp_id in pending_ids: mark_as_detected_in_openaev(exp_id)
+
+    except Exception as e:
+        logger.error(f"Erreur Elasticsearch : {e}")
+        
+# ==========================================
+# 4. POINT D'ENTRÉE
+# ==========================================
+if __name__ == "__main__":
+    logger.info("==================================================")
+    logger.info("PONT XDR (SYSMON + DEFENDER) ACTIVÉ")
+    logger.info("==================================================")
+    
+    while True:
+        check_detections()
+        time.sleep(5)
