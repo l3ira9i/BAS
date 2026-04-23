@@ -1,0 +1,8 @@
+#xpack.encryptedSavedObjects.encryptionKey: "toto123toto456toto789toto012toto3456"
+#xpack.security.encryptionKey: "toto123toto456toto789toto012toto3456"
+#xpack.reporting.encryptionKey: "toto123toto456toto789toto012toto3456"
+
+
+xpack.security.encryptionKey: "uSZMXFQc0tHjax3vD5psHD7w5f1EV0hqnjmXh5Szuss"
+xpack.encryptedSavedObjects.encryptionKey: "Dnq8aAJFlLJhc2MrW1cenO3ymMGmFgDe2ZV7DImJVpU"
+xpack.reporting.encryptionKey: "KIfmkdzrO6CA0bqOQs86CdyxewMbpuYxvUg3n1HnRXwZ"

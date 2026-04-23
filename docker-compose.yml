@@ -75,9 +75,10 @@ services:
       - discovery.type=single-node
       # Uncomment the line below below for a cluster of multiple nodes
       # - cluster.name=docker-cluster
-      - xpack.ml.enabled=false
+      - xpack.ml.enabled=false #
+      - ELASTIC_PASSWORD=${ELASTIC_PASSWORD} #
       - network.host=0.0.0.0
-      - xpack.security.enabled=false
+      - xpack.security.enabled=false #
       - thread_pool.search.queue_size=5000
       - logger.org.elasticsearch.discovery="ERROR"
       - ES_JAVA_OPTS=-Xms${ELASTIC_MEMORY_SIZE} -Xmx${ELASTIC_MEMORY_SIZE}
@@ -97,9 +98,18 @@ services:
       retries: 50
 
   kibana:
-    image: docker.elastic.co/kibana/kibana:7.17.0
+    image: docker.elastic.co/kibana/kibana:8.13.4
     environment:
       - ELASTICSEARCH_HOSTS=http://elasticsearch:9200
+#      - ELASTICSEARCH_SERVICEACCOUNTTOKEN=AAEAAWVsYXN0aWMva2liYW5hL2tpYmFuYS10b2tlbjpXa1J6QVJ1bVFHYWhrY2xlNEhGcXl3
+#      - xpack.security.encryptionKey="uSZMXFQc0tHjax3vD5psHD7w5f/EV0hqnjmXh5Szuss="
+#      - xpack.encryptedSavedObjects.encryptionKey="Dnq8aAJFlLJhc2MrW/cenO3ymMGmFgDe2ZV7DImJVpU="
+#      - xpack.reporting.encryptionKey="KIfmkdzrO6CA0bqOQs86CdyxewMbpuYxvUg3n/HnRXw="
+#      - xpack.security.encryptionKey=uSZMXFQc0tHjax3vD5psHD7w5f1EV0hqnjmXh5Szuss
+#      - xpack.encryptedSavedObjects.encryptionKey=Dnq8aAJFlLJhc2MrW1cenO3ymMGmFgDe2ZV7DImJVpU
+#      - xpack.reporting.encryptionKey=KIfmkdzrO6CA0bqOQs86CdyxewMbpuYxvUg3n1HnRXwZ
+#    volumes:
+#      - ./kibana.yml:/usr/share/kibana/config/kibana.yml:ro
     ports:
       - "5601:5601"
     depends_on:
@@ -202,6 +212,17 @@ services:
       - INJECTOR_CALDERA_API-KEY=${INJECTOR_CALDERA_API_KEY}
       - INJECTOR_CALDERA_ID=${INJECTOR_CALDERA_ID}
       - INJECTOR_CALDERA_LOG_LEVEL=${INJECTOR_CALDERA_LOG_LEVEL}
+      
+      - ELASTICSEARCH_USERNAME=elastic
+      - ELASTICSEARCH_PASSWORD=Qwerty123
+      - SPRING_ELASTICSEARCH_USERNAME=elastic
+      - SPRING_ELASTICSEARCH_PASSWORD=Qwerty123
+      
+#      - ELASTICSEARCH_USERNAME=elastic
+#      - ELASTICSEARCH_PASSWORD=${OPENAEV_ADMIN_PASSWORD}
+
+#      - SPRING_ELASTICSEARCH_USERNAME=elastic
+#      - SPRING_ELASTICSEARCH_PASSWORD=${OPENAEV_ADMIN_PASSWORD}
 
      #- SPRING_MAIL_HOST=${SMTP_HOST}
      #- SPRING_MAIL_PORT=${SMTP_PORT}
